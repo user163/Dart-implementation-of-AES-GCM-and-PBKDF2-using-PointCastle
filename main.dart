@@ -1,93 +1,76 @@
-import 'package:pointycastle/api.dart';
-import 'package:pointycastle/block/aes_fast.dart';
-import 'package:pointycastle/block/modes/gcm.dart';
-import 'package:pointycastle/key_derivators/api.dart';
-import 'package:pointycastle/random/fortuna_random.dart';
-
-import 'dart:math';
 import 'dart:convert';
 import 'dart:typed_data';
+import 'dart:math';
+import 'package:pointycastle/export.dart';
 
 void main() {
+  
+  final passphrase = utf8.encode("Some passphrase");
+  final plaintext = utf8.encode("The quick brown fox jumps over the lazy dog");
+  final aad = utf8.encode("Some additional authenticated data (AAD)");
 
-  Uint8List passphrase = utf8.encode("The passphrase");
-  Uint8List plaintext = utf8.encode("The quick brown fox jumps over the lazy dog");
+  final ciphertext = AesGcmPbkdf2.encrypt(passphrase, plaintext, aad);
+  print(base64.encode(ciphertext)); // Example: zAY+zkMmRCdMB6FZCluJuF+WS3WwWARSqE9ajroUndPOuu3Zj6qGVSP/vklVOjgia29oJ+RfD8lYFYNQRTv8lJHjHx8vTqwxCcVx9xlfvOFD23k56zg9
 
-  Uint8List ciphertext = AesGcmPbkdf2.encrypt(passphrase, plaintext);
-  print(base64.encode(ciphertext)); // Example: 9LsGEs5hNyW0yX3LvS96UkviAH0EBi0nRTs8T15Rn4L8SZpEnDDyhSN+v8p7t+Arki1EnyZism2vUo0W779/eB2gASQ14sh7NM7Tmca9+Gy1W2zYXFDy
-
-  Uint8List decryptedtext = AesGcmPbkdf2.decrypt(passphrase, ciphertext);
+  final decryptedtext = AesGcmPbkdf2.decrypt(passphrase, ciphertext, aad);
   print(utf8.decode(decryptedtext));
 }
 
 class AesGcmPbkdf2 {
 
-  static int ALGORITHM_NONCE_SIZE = 12;
-  static int ALGORITHM_TAG_SIZE = 128;
-  static int ALGORITHM_KEY_SIZE = 128;
-  static String PBKDF2_NAME = 'SHA-256/HMAC/PBKDF2';
-  static int PBKDF2_SALT_SIZE = 16;
-  static int PBKDF2_ITERATIONS = 32767;
+  static const ALGORITHM_NONCE_SIZE = 12; // bytes
+  static const ALGORITHM_TAG_SIZE = 16; // bytes
+  static const ALGORITHM_KEY_SIZE = 32; // bytes
+  static const PBKDF2_PRF_DIGEST = 'SHA-256/HMAC/PBKDF2';
+  static const PBKDF2_SALT_SIZE = 16; // bytes
+  static const PBKDF2_ITERATIONS = 32767;
 
-  static Uint8List encrypt(Uint8List passphrase, Uint8List plaintext) {
+  static Uint8List encrypt(Uint8List passphrase, Uint8List plaintext, Uint8List aad) {
 
-    // Generate nonce and salt
-    Random rnd = Random.secure(); // or any other CSPRNG like e.g. FortunaRandom
-    Uint8List salt = getRandomData(rnd, PBKDF2_SALT_SIZE);
-    Uint8List nonce = getRandomData(rnd, ALGORITHM_NONCE_SIZE);
-    Uint8List aad = new Uint8List(0);
+    // Derive random salt and nonce
+    final rnd = getSecureRandom();
+    final salt = rnd.nextBytes(PBKDF2_SALT_SIZE);
+    final nonce = rnd.nextBytes(ALGORITHM_NONCE_SIZE);
 
-    // Derive key via PBKDF2
-    Uint8List key = generateKey(salt, passphrase);
+    // PBKDF2 key derivation
+    final key = generateKey(salt, passphrase);
 
-    // Encrypt with AES/GCM
-    GCMBlockCipher encrypter = GCMBlockCipher(AESFastEngine());
-    AEADParameters params = AEADParameters(KeyParameter(key), ALGORITHM_TAG_SIZE, nonce, aad);
-    encrypter.init(true, params);
-    Uint8List ciphertextTag = encrypter.process(plaintext);
+    // AES/GCM Encryption
+    final cipher = GCMBlockCipher(AESEngine())
+      ..init(true, AEADParameters(KeyParameter(key), ALGORITHM_TAG_SIZE * 8, nonce, aad));
+    final ciphertextTag = cipher.process(plaintext);
 
-    // Concat salt|nonce|ciphertext|tag
-    BytesBuilder all = BytesBuilder();
-    all.add(salt);
-    all.add(nonce);
-    all.add(ciphertextTag);
-
-    return all.toBytes();
+    return Uint8List.fromList(salt + nonce + ciphertextTag);
   }
 
-  static Uint8List decrypt(Uint8List passphrase, Uint8List ciphertext) {
+  static Uint8List decrypt(Uint8List passphrase, Uint8List encryptedData, Uint8List aad) {
 
     // Separate salt, nonce and ciphertext|tag
-    Uint8List salt = ciphertext.sublist(0, PBKDF2_SALT_SIZE);
-    Uint8List nonce = ciphertext.sublist(PBKDF2_SALT_SIZE, PBKDF2_SALT_SIZE + ALGORITHM_NONCE_SIZE);
-    Uint8List ciphertextTag = ciphertext.sublist(PBKDF2_SALT_SIZE + ALGORITHM_NONCE_SIZE);
-    Uint8List aad = new Uint8List(0);
+    final salt = encryptedData.sublist(0, PBKDF2_SALT_SIZE);
+    final nonce = encryptedData.sublist(PBKDF2_SALT_SIZE, PBKDF2_SALT_SIZE + ALGORITHM_NONCE_SIZE);
+    final ciphertextTag = encryptedData.sublist(PBKDF2_SALT_SIZE + ALGORITHM_NONCE_SIZE);
 
-    // Derive key via PBKDF2
-    Uint8List key = generateKey(salt, passphrase);
+    // PBKDF2 key derivation
+    final key = generateKey(salt, passphrase);
 
-    // Decrypt with AES/GCM
-    GCMBlockCipher decrypter = GCMBlockCipher(AESFastEngine());
-    AEADParameters params = AEADParameters(KeyParameter(key), ALGORITHM_TAG_SIZE, nonce, aad);
-    decrypter.init(false, params);
-    Uint8List plaintext = decrypter.process(ciphertextTag);
+    // AES/GCM Decryption
+    final cipher = GCMBlockCipher(AESEngine())
+      ..init(false, AEADParameters(KeyParameter(key), ALGORITHM_TAG_SIZE * 8, nonce, aad));
+    final decrypted = cipher.process(ciphertextTag);
 
-    return plaintext;
+    return decrypted;
   }
 
-  static Uint8List getRandomData(Random rnd, int numberBytes){
-    Uint8List data = Uint8List(numberBytes);
-    for (int i = 0; i < numberBytes; i++) {
-      data[i] = rnd.nextInt(256);
-    }
-    return data;
+  static SecureRandom getSecureRandom() {
+    final seed = List<int>.generate(32, (_) => Random.secure().nextInt(256));
+    return FortunaRandom()
+      ..seed(KeyParameter(Uint8List.fromList(seed)));
   }
 
   static Uint8List generateKey(Uint8List salt, Uint8List passphrase){
-    var derivator = new KeyDerivator(PBKDF2_NAME);
-    var params = new Pbkdf2Parameters(salt, PBKDF2_ITERATIONS, ALGORITHM_KEY_SIZE~/8);
-    derivator.init(params);
+    final derivator = KeyDerivator(PBKDF2_PRF_DIGEST);
+    final pbkdf2Params = Pbkdf2Parameters(salt, PBKDF2_ITERATIONS, ALGORITHM_KEY_SIZE);
+    derivator.init(pbkdf2Params);
     return derivator.process(passphrase);
   }
-  
 }
